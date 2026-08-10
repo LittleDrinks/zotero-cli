@@ -18,11 +18,10 @@ ln -s "$PWD/zotero.py" ~/.local/bin/zotero-cli
 ## 环境要求
 
 - Python 3.10+（零第三方依赖，stdlib only）
-- **标题提取（二选一，按优先级）**：
-  - `opendataloader-pdf`（推荐，更准）——`pip install opendataloader-pdf` 或 `uv tool install opendataloader-pdf`，需 Java 11+
-  - `pdftotext`（poppler-utils）——ODL 不可用时的自动回退
 - 导入时 Zotero 需关闭（SQLite 写锁）
 - 跨平台：Windows / macOS / Linux 均可（Zotero 运行检测按平台自动选择 tasklist 或 pgrep）
+
+> PDF 内容提取（标题、arXiv ID）**不是本工具的职责**——由你习惯的 PDF 提取工具完成（如 opendataloader-pdf、marker-pdf 等），提取结果通过 `--title` / `--arxiv-id` 传入。本工具保持零依赖，不绑定任何解析器。
 
 ## 使用
 
@@ -36,8 +35,11 @@ zotero-cli search "attention is all you need"
 # 列出分类
 zotero-cli collections
 
-# 导入本地 PDF（自动提标题、查重、补元数据）
-zotero-cli import pdf paper.pdf --collection "AI4Science"
+# 导入本地 PDF（标题需先用外部工具提取，见下方组合示例）
+zotero-cli import pdf paper.pdf --title "Paper Title" --collection "AI4Science"
+
+# 带 arXiv ID 导入（自动补作者等元数据）
+zotero-cli import pdf paper.pdf --title "Paper Title" --arxiv-id 2608.04003 --collection "AI4Science"
 
 # 导入 arXiv 论文（API 验证标题，自动下载 PDF）
 zotero-cli import arxiv 2608.04003 --collection "AI4Science"
@@ -52,11 +54,23 @@ zotero-cli export-bibtex --out references.bib
 ## 导入流程
 
 1. **校验 PDF**：检查 `%PDF-` magic 和文件大小（>50KB）。HTML 错误页、下载占位文件直接被拒。
-2. **提取标题**：`opendataloader-pdf` 解析第一页为结构化 markdown（`# ` 标题行 + `## arXiv:` ID 行），比 pdftotext 更准且顺带拿到 arXiv ID；ODL 不可用时自动回退 pdftotext 读首页文本。用真实标题，不信文件名（文件名经常是谎言）。
+2. **提取标题**（外部完成）：用你习惯的 PDF 提取工具（如 opendataloader-pdf）解析出标题和 arXiv ID，通过 `--title` / `--arxiv-id` 传入。本工具不内置任何解析器。
 3. **查重**：用标题前 2-3 个长词拼 LIKE 短语精确匹配。仅当"标题完全一致且已有 PDF 附件"时判定已存在并跳过。
-4. **arXiv 元数据**：从文件名或首页文本找 arXiv ID，走 API `id_list` 验证标题/作者。绝不信凭记忆编的 ID。
+4. **arXiv 元数据**：若给了 `--arxiv-id`，走 API `id_list` 验证标题/作者。绝不信凭记忆编的 ID。
 5. **入库**：写入主条目 + 附件条目两条 items 行；storage 目录名 = **附件条目 key**（不是主条目 key）；作者按 last/first 拆分。
 6. **归分类**：按名称找 collection，不存在则创建，再挂载。
+
+### 与提取工具的组合示例
+
+```bash
+# 1. 用 opendataloader-pdf 提取标题
+opendataloader-pdf paper.pdf --to-stdout -f markdown --pages 1 | grep -m1 "^# "
+
+# 2. 传给 zotero-cli 入库
+zotero-cli import pdf paper.pdf --title "Real Paper Title" --arxiv-id 2608.04003 --collection "AI4Science"
+```
+
+换任何提取工具只需改第 1 步——zotero-cli 不关心你用什么。
 
 ## 踩坑记录（为什么这些坑存在）
 

@@ -8,7 +8,7 @@ Commands:
   status              Library health: db readable, Zotero running, counts
   search <query>      Search items by title (dedup pre-check)
   collections         List collections
-  import pdf <files>  Import PDFs: title -> dedup -> metadata -> storage
+  import pdf <files>  Import PDFs (--title required, extract externally)
   import arxiv <id>   Fetch + import an arXiv paper (API-verified title)
   meta-check          Scan items missing date/creators/url
   export-bibtex       Export library as BibTeX
@@ -133,64 +133,6 @@ def zotero_running() -> bool:
         return False
 
 
-# ---------------------------------------------------------------- pdf title
-
-def _run_odl(pdf: Path) -> str:
-    """Extract first-page markdown via opendataloader-pdf (global CLI)."""
-    r = subprocess.run(
-        ["opendataloader-pdf", str(pdf), "--to-stdout", "-f", "markdown",
-         "--pages", "1", "--threads", "1"],
-        capture_output=True, timeout=120,
-    )
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.decode("utf-8", errors="replace")[:300])
-    return r.stdout.decode("utf-8", errors="replace")
-
-
-def pdf_title(pdf: Path) -> tuple[str, str | None]:
-    """Extract (title, arxiv_id) from a PDF.
-
-    Prefers opendataloader-pdf: structured markdown where the first
-    `# ` heading is the title and a `## arXiv:...` line carries the ID.
-    Falls back to pdftotext first-page text when odl is unavailable.
-    """
-    try:
-        md = _run_odl(pdf)
-        title = ""
-        arxiv_id = None
-        for line in md.splitlines():
-            line = line.strip()
-            m = re.match(r"^#{1,3}\s+arXiv:(\d{4}\.\d{4,5}(?:v\d+)?)", line)
-            if m and not arxiv_id:
-                arxiv_id = m.group(1)
-                continue
-            if line.startswith("# ") and not title:
-                title = line[2:].strip()
-            if title:
-                break
-        if title:
-            return title[:200], arxiv_id
-    except Exception:
-        pass  # fall through to pdftotext
-
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "p1.txt"
-        try:
-            subprocess.run(
-                ["pdftotext", "-f", "1", "-l", "1", str(pdf), str(out)],
-                capture_output=True, check=True, timeout=60,
-            )
-            text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
-        except Exception:
-            return "", None
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return "", None
-    title = " ".join(lines[:3]).strip()[:200]
-    m = ARXIV_ID_RE.search(" ".join(lines[:5]))
-    return title, (m.group(1) if m else None)
-
-
 # ---------------------------------------------------------------- dedup
 
 def dedup_query(title: str) -> str:
@@ -253,22 +195,6 @@ def arxiv_metadata(arxiv_id: str) -> dict:
         "pdf_url": m_pdf.group(1) if m_pdf else f"https://arxiv.org/pdf/{arxiv_id}",
         "extra": f"arXiv:{arxiv_id}",
     }
-
-
-def find_arxiv_id_in_pdf(pdf: Path) -> str | None:
-    """Look for an arXiv ID in filename or first-page text."""
-    m = ARXIV_ID_RE.search(pdf.name)
-    if m:
-        return m.group(1)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "p1.txt"
-        subprocess.run(
-            ["pdftotext", "-f", "1", "-l", "2", str(pdf), str(out)],
-            capture_output=True, check=True, timeout=60,
-        )
-        text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
-    m = ARXIV_ID_RE.search(text)
-    return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------- import
@@ -458,18 +384,21 @@ def cmd_import_pdf(args) -> None:
         if err:
             print(f"SKIP {pdf.name}: {err}")
             continue
-        title = pdf_first_page_title(pdf)
+        # Title/arXiv-ID come from the caller (extracted by an external
+        # PDF skill, e.g. odl-pdf). One --title applies to the whole batch;
+        # pairs mode (--title-per-file) is supported for mixed batches.
+        title = args.title
+        arxiv_id = args.arxiv_id
         if not title:
-            print(f"SKIP {pdf.name}: no text layer (scanned PDF?)")
+            print(f"SKIP {pdf.name}: --title required (extract it with odl-pdf first)")
             continue
         existing = find_existing(conn, title)
         if any(h["exact"] and h["pdf"] for h in existing):
             print(f"SKIP {pdf.name}: already in library ({existing[0]['key']})")
             continue
-        arxiv_id = find_arxiv_id_in_pdf(pdf)
         meta = arxiv_metadata(arxiv_id) if arxiv_id else {}
         if meta.get("title"):
-            title = meta["title"]  # API title beats first-page guess
+            title = meta["title"]  # API title beats caller-provided guess
         result = import_item(
             conn, title=title, authors=meta.get("authors", []),
             date=args.date, url=meta.get("url"), extra=meta.get("extra"),
@@ -584,9 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ip = sub.add_parser("import", help="import")
     ip_sub = ip.add_subparsers(dest="kind", required=True)
-    pdf = ip_sub.add_parser("pdf", help="import PDF files")
+    pdf = ip_sub.add_parser("pdf", help="import PDF files (title from --title, extracted externally)")
     pdf.add_argument("files", nargs="+")
     pdf.add_argument("--collection", help="collection name")
+    pdf.add_argument("--title", help="paper title (extract with odl-pdf skill first)")
+    pdf.add_argument("--arxiv-id", help="arXiv ID for metadata (optional)")
     pdf.add_argument("--date", help="date override (YYYY-MM-DD)")
     pdf.set_defaults(func=cmd_import_pdf)
     arx = ip_sub.add_parser("arxiv", help="import arXiv paper by ID")
