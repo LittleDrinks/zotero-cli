@@ -28,8 +28,23 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DB = os.environ.get("ZOTERO_DB_PATH", "/mnt/e/LittleDrinks/zotero/zotero.sqlite")
-DEFAULT_STORAGE = os.environ.get("ZOTERO_STORAGE", "/mnt/e/LittleDrinks/zotero/storage")
+def load_dotenv(path: str | None = None) -> None:
+    """Load KEY=VALUE pairs from .env (next to this script) into os.environ."""
+    dotenv = path or str(Path(__file__).resolve().parent / ".env")
+    if not os.path.exists(dotenv):
+        return
+    for line in open(dotenv, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+load_dotenv()
+
+DEFAULT_DB = os.environ.get("ZOTERO_DB_PATH", str(Path.home() / "Zotero" / "zotero.sqlite"))
+DEFAULT_STORAGE = os.environ.get("ZOTERO_STORAGE", str(Path.home() / "Zotero" / "storage"))
 PROXY = os.environ.get("HTTPS_PROXY", "http://127.0.0.1:7897")
 
 FIELD_IDS: dict[str, int] = {}

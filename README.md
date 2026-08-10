@@ -67,12 +67,19 @@ zotero-cli export-bibtex --out references.bib
 
 ## 配置
 
-| 环境变量 | 默认值 | 含义 |
-|---|---|---|
-| `ZOTERO_DB_PATH` | `/mnt/e/LittleDrinks/zotero/zotero.sqlite` | zotero.sqlite 路径 |
-| `ZOTERO_STORAGE` | `/mnt/e/LittleDrinks/zotero/storage` | Zotero storage 目录 |
+复制 `.env.example` 为 `.env`，填入你的 Zotero 数据目录：
 
-或每条命令传 `--db` / `--storage`。
+```bash
+cp .env.example .env
+```
+
+```env
+# .env
+ZOTERO_DB_PATH=/path/to/zotero.sqlite
+ZOTERO_STORAGE=/path/to/storage
+```
+
+`.env` 已被 `.gitignore` 忽略，不会上传仓库。也可用环境变量或每条命令传 `--db` / `--storage`。不设置时默认 `~/Zotero/`（Zotero 标准数据目录）。
 
 ## 安全设计
 
