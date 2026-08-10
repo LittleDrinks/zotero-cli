@@ -373,6 +373,29 @@ def cmd_collections(args) -> None:
     conn.close()
 
 
+def cmd_collection_create(args) -> None:
+    if zotero_running():
+        print("ERROR: Zotero is running. Close it first (SQLite write lock).", file=sys.stderr)
+        sys.exit(1)
+    conn = connect(args.db)
+    existing = conn.execute(
+        "SELECT collectionID FROM collections WHERE collectionName=? AND libraryID=?",
+        (args.name, MAIN_LIBRARY),
+    ).fetchone()
+    if existing:
+        print(f"EXISTS: collection '{args.name}' already exists (id={existing['collectionID']})")
+        conn.close()
+        return
+    cur = conn.execute(
+        "INSERT INTO collections (collectionName, libraryID, parentCollectionID, key) "
+        "VALUES (?,?,?,?)",
+        (args.name, MAIN_LIBRARY, None, random_key()),
+    )
+    conn.commit()
+    print(f"CREATED: '{args.name}' (id={cur.lastrowid})")
+    conn.close()
+
+
 def cmd_import_pdf(args) -> None:
     if zotero_running():
         print("ERROR: Zotero is running. Close it first (SQLite write lock).", file=sys.stderr)
@@ -510,6 +533,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("query")
     s.set_defaults(func=cmd_search)
     sub.add_parser("collections", help="list collections").set_defaults(func=cmd_collections)
+    cc = sub.add_parser("collection-create", help="create a collection")
+    cc.add_argument("name")
+    cc.set_defaults(func=cmd_collection_create)
 
     ip = sub.add_parser("import", help="import")
     ip_sub = ip.add_subparsers(dest="kind", required=True)
