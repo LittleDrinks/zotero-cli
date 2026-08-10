@@ -102,8 +102,10 @@ def set_value(conn, item_id: int, fname: str, value: str) -> None:
 
 def random_key() -> str:
     import random
-    import string
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    # Zotero allowedKeyChars = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"（排除 0,1,O）
+    # 服务器同步会 400 拒绝含 0/1/O 的 key（'XXX' is not a valid item key）
+    chars = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
+    return "".join(random.choices(chars, k=8))
 
 
 # ---------------------------------------------------------------- zotero run
@@ -218,7 +220,7 @@ def import_item(conn, *, title: str, authors: list[str], date: str | None,
                 collection: str | None, storage_dir: Path | None = None) -> dict:
     """Insert one item (+attachment +collection) into the DB."""
     storage_root = storage_dir or Path(DEFAULT_STORAGE)
-    now = int(__import__("time").time() * 1000)
+    now = time.strftime('%Y-%m-%d %H:%M:%S')  # Zotero 期望 text，不是毫秒时间戳
     key = random_key()
     cur = conn.execute(
         """INSERT INTO items (key, libraryID, itemTypeID, dateAdded, dateModified, clientDateModified)
