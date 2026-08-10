@@ -18,8 +18,11 @@ ln -s "$PWD/zotero.py" ~/.local/bin/zotero-cli
 ## 环境要求
 
 - Python 3.10+（零第三方依赖，stdlib only）
-- `pdftotext`（poppler-utils）——提取 PDF 首页标题
+- **标题提取（二选一，按优先级）**：
+  - `opendataloader-pdf`（推荐，更准）——`pip install opendataloader-pdf` 或 `uv tool install opendataloader-pdf`，需 Java 11+
+  - `pdftotext`（poppler-utils）——ODL 不可用时的自动回退
 - 导入时 Zotero 需关闭（SQLite 写锁）
+- 跨平台：Windows / macOS / Linux 均可（Zotero 运行检测按平台自动选择 tasklist 或 pgrep）
 
 ## 使用
 
@@ -49,7 +52,7 @@ zotero-cli export-bibtex --out references.bib
 ## 导入流程
 
 1. **校验 PDF**：检查 `%PDF-` magic 和文件大小（>50KB）。HTML 错误页、下载占位文件直接被拒。
-2. **提取标题**：`pdftotext` 读第一页——用真实标题，不信文件名（文件名经常是谎言）。
+2. **提取标题**：`opendataloader-pdf` 解析第一页为结构化 markdown（`# ` 标题行 + `## arXiv:` ID 行），比 pdftotext 更准且顺带拿到 arXiv ID；ODL 不可用时自动回退 pdftotext 读首页文本。用真实标题，不信文件名（文件名经常是谎言）。
 3. **查重**：用标题前 2-3 个长词拼 LIKE 短语精确匹配。仅当"标题完全一致且已有 PDF 附件"时判定已存在并跳过。
 4. **arXiv 元数据**：从文件名或首页文本找 arXiv ID，走 API `id_list` 验证标题/作者。绝不信凭记忆编的 ID。
 5. **入库**：写入主条目 + 附件条目两条 items 行；storage 目录名 = **附件条目 key**（不是主条目 key）；作者按 last/first 拆分。
@@ -57,13 +60,13 @@ zotero-cli export-bibtex --out references.bib
 
 ## 踩坑记录（为什么这些坑存在）
 
-- **Zotero 运行检测**：`tasklist.exe` 输出是 GBK 编码，UTF-8 解码会崩溃。按 bytes 匹配或 `decode('gbk')` 处理。
-- **arXiv 网络**：arXiv API 走代理会 SSL EOF——必须 `ProxyHandler({})` 直连。注意 OpenReview 相反（必须走代理），本工具不含 OpenReview。
-- **附件 key ≠ 主条目 key**：storage 目录名必须等于附件条目的 key（Zotero 约定）。验证：
+- **Zotero 运行检测**（Windows 相关）：`tasklist.exe` 输出是 GBK 编码，UTF-8 解码会崩溃。工具已按 bytes 匹配处理；macOS/Linux 走 pgrep 无此问题。
+- **arXiv 网络**（跨平台）：arXiv API 走代理会 SSL EOF——必须 `ProxyHandler({})` 直连。注意 OpenReview 相反（必须走代理），本工具不含 OpenReview。
+- **附件 key ≠ 主条目 key**（Zotero 约定，跨平台）：storage 目录名必须等于附件条目的 key。验证：
   `SELECT i.key FROM items i JOIN itemAttachments ia ON ia.itemID=i.itemID WHERE ia.parentItemID=<主条目>`
-- **9p 挂载缓存**：写完 storage 后 WSL 侧 `os.path.exists` 可能间歇返回 False——以 Windows 侧 `cmd.exe` 验证为准。
-- **附件条目不级联删除**：删主条目不会删附件条目（itemAttachments 的 itemID 是附件自己的主键，parentItemID 才是外键）。手动删除顺序：先删 itemAttachments 行，再删附件 items 行。
-- **写锁**：Zotero 运行中直写 SQLite 有损坏风险。工具内建检查，报 "Zotero is running" 时先关闭 Zotero。
+- **挂载缓存**（仅 WSL/网络文件系统）：写完 storage 后 `os.path.exists` 可能间歇返回 False。工具已内建写后验证重试；原生 Windows/macOS 无此问题。
+- **附件条目不级联删除**（Zotero schema，跨平台）：删主条目不会删附件条目（itemAttachments 的 itemID 是附件自己的主键，parentItemID 才是外键）。手动删除顺序：先删 itemAttachments 行，再删附件 items 行。
+- **写锁**（跨平台）：Zotero 运行中直写 SQLite 有损坏风险。工具内建检查，报 "Zotero is running" 时先关闭 Zotero。
 
 ## 配置
 
@@ -83,7 +86,7 @@ ZOTERO_STORAGE=/path/to/storage
 
 ## 安全设计
 
-- Zotero 运行时拒绝写操作（tasklist.exe 检查）
+- Zotero 运行时拒绝写操作（跨平台进程检测）
 - 导入文件校验 `%PDF-` magic + 大小 >50KB，HTML 错误页直接拒
 - 已存在条目跳过，绝不重复导入
 

@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -107,34 +109,86 @@ def random_key() -> str:
 # ---------------------------------------------------------------- zotero run
 
 def zotero_running() -> bool:
-    """Check via tasklist.exe (Windows host) — WSL pgrep misfires on zotero-mcp."""
+    """Check whether Zotero Desktop is running. Platform-aware:
+    Windows → tasklist.exe (GBK output); macOS/Linux → pgrep.
+    """
+    system = platform.system()
     try:
-        out = subprocess.run(
-            ["tasklist.exe", "/FO", "CSV", "/NH"],
-            capture_output=True, timeout=15,
-        ).stdout
-        return b"zotero.exe" in out.lower() or "zotero.exe" in out.decode("gbk", errors="replace").lower()
+        if system == "Windows":
+            out = subprocess.run(
+                ["tasklist.exe", "/FO", "CSV", "/NH"],
+                capture_output=True, timeout=15,
+            ).stdout
+            return b"zotero.exe" in out.lower() or "zotero.exe" in out.decode("gbk", errors="replace").lower()
+        # macOS / Linux: pgrep, matching only the desktop app
+        names = ["Zotero", "zotero"] if system == "Darwin" else ["zotero"]
+        for name in names:
+            r = subprocess.run(
+                ["pgrep", "-x", name], capture_output=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return True
+        return False
     except Exception:
         return False
 
 
 # ---------------------------------------------------------------- pdf title
 
-def pdf_first_page_title(pdf: Path) -> str:
-    """Extract the real title from the first page text (filenames lie)."""
+def _run_odl(pdf: Path) -> str:
+    """Extract first-page markdown via opendataloader-pdf (global CLI)."""
+    r = subprocess.run(
+        ["opendataloader-pdf", str(pdf), "--to-stdout", "-f", "markdown",
+         "--pages", "1", "--threads", "1"],
+        capture_output=True, timeout=120,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode("utf-8", errors="replace")[:300])
+    return r.stdout.decode("utf-8", errors="replace")
+
+
+def pdf_title(pdf: Path) -> tuple[str, str | None]:
+    """Extract (title, arxiv_id) from a PDF.
+
+    Prefers opendataloader-pdf: structured markdown where the first
+    `# ` heading is the title and a `## arXiv:...` line carries the ID.
+    Falls back to pdftotext first-page text when odl is unavailable.
+    """
+    try:
+        md = _run_odl(pdf)
+        title = ""
+        arxiv_id = None
+        for line in md.splitlines():
+            line = line.strip()
+            m = re.match(r"^#{1,3}\s+arXiv:(\d{4}\.\d{4,5}(?:v\d+)?)", line)
+            if m and not arxiv_id:
+                arxiv_id = m.group(1)
+                continue
+            if line.startswith("# ") and not title:
+                title = line[2:].strip()
+            if title:
+                break
+        if title:
+            return title[:200], arxiv_id
+    except Exception:
+        pass  # fall through to pdftotext
+
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "p1.txt"
-        subprocess.run(
-            ["pdftotext", "-f", "1", "-l", "1", str(pdf), str(out)],
-            capture_output=True, check=True, timeout=60,
-        )
-        text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+        try:
+            subprocess.run(
+                ["pdftotext", "-f", "1", "-l", "1", str(pdf), str(out)],
+                capture_output=True, check=True, timeout=60,
+            )
+            text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+        except Exception:
+            return "", None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
-        return ""
-    # First 1-3 non-empty lines usually carry the title; cap at ~120 chars.
-    title = " ".join(lines[:3]).strip()
-    return title[:200]
+        return "", None
+    title = " ".join(lines[:3]).strip()[:200]
+    m = ARXIV_ID_RE.search(" ".join(lines[:5]))
+    return title, (m.group(1) if m else None)
 
 
 # ---------------------------------------------------------------- dedup
@@ -295,6 +349,13 @@ def import_item(conn, *, title: str, authors: list[str], date: str | None,
         storage_dir_path = storage_root / attach_key
         storage_dir_path.mkdir(parents=True, exist_ok=True)
         shutil.copy2(pdf_path, storage_dir_path / pdf_path.name)
+        # verify write landed (some filesystems report stale stat; retry once)
+        for _ in range(2):
+            dest = storage_dir_path / pdf_path.name
+            if dest.exists() and dest.stat().st_size == pdf_path.stat().st_size:
+                break
+            time.sleep(0.5)
+            shutil.copy2(pdf_path, storage_dir_path / pdf_path.name)
 
     if collection:
         col = conn.execute(
