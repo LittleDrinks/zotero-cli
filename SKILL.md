@@ -58,3 +58,7 @@ python3 <仓库路径>/zotero.py export-bibtex --out refs.bib
 - 只 journalArticle 类型；DOI 论文无自动元数据；扫描版 PDF 需先 OCR 提取标题
 
 完整说明见仓库 README.md。
+
+## 文献谱系模式
+
+当任务从“导入一篇论文”扩展为“围绕论文或主题检索、双向追踪引用、读取施引语境并梳理研究演化”时，使用同目录的 [`literature-lineage`](./literature-lineage/SKILL.md) 子 skill。它负责检索与证据图谱；本 skill 仍只负责 Zotero 库的读写、去重和导出。

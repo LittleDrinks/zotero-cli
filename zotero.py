@@ -30,6 +30,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+
 def load_dotenv(path: str | None = None) -> None:
     """Load KEY=VALUE pairs from .env (next to this script) into os.environ."""
     dotenv = path or str(Path(__file__).resolve().parent / ".env")
@@ -45,8 +46,12 @@ def load_dotenv(path: str | None = None) -> None:
 
 load_dotenv()
 
-DEFAULT_DB = os.environ.get("ZOTERO_DB_PATH", str(Path.home() / "Zotero" / "zotero.sqlite"))
-DEFAULT_STORAGE = os.environ.get("ZOTERO_STORAGE", str(Path.home() / "Zotero" / "storage"))
+DEFAULT_DB = os.environ.get(
+    "ZOTERO_DB_PATH", str(Path.home() / "Zotero" / "zotero.sqlite")
+)
+DEFAULT_STORAGE = os.environ.get(
+    "ZOTERO_STORAGE", str(Path.home() / "Zotero" / "storage")
+)
 PROXY = os.environ.get("HTTPS_PROXY", "http://127.0.0.1:7897")
 
 FIELD_IDS: dict[str, int] = {}
@@ -57,8 +62,10 @@ MAIN_LIBRARY = 1
 
 # ---------------------------------------------------------------- db helpers
 
+
 def connect(db: str):
     import sqlite3
+
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
     return conn
@@ -66,7 +73,9 @@ def connect(db: str):
 
 def field_id(conn, name: str) -> int:
     if name not in FIELD_IDS:
-        row = conn.execute("SELECT fieldID FROM fields WHERE fieldName=?", (name,)).fetchone()
+        row = conn.execute(
+            "SELECT fieldID FROM fields WHERE fieldName=?", (name,)
+        ).fetchone()
         if row is None:
             raise RuntimeError(f"unknown field {name}")
         FIELD_IDS[name] = row["fieldID"]
@@ -75,7 +84,9 @@ def field_id(conn, name: str) -> int:
 
 def type_id(conn, name: str) -> int:
     if name not in TYPE_IDS:
-        row = conn.execute("SELECT itemTypeID FROM itemTypes WHERE typeName=?", (name,)).fetchone()
+        row = conn.execute(
+            "SELECT itemTypeID FROM itemTypes WHERE typeName=?", (name,)
+        ).fetchone()
         if row is None:
             raise RuntimeError(f"unknown item type {name}")
         TYPE_IDS[name] = row["itemTypeID"]
@@ -93,15 +104,24 @@ def get_value(conn, item_id: int, fname: str) -> str | None:
 
 
 def set_value(conn, item_id: int, fname: str, value: str) -> None:
-    cur = conn.execute("INSERT INTO itemDataValues (value) VALUES (?)", (value,))
+    # itemDataValues.value 全库 UNIQUE：先查已存在，复用 valueID（否则撞
+    # UNIQUE constraint，且 feed 库条目若已有同标题 value 必然报 IntegrityError）
+    cur = conn.execute("SELECT valueID FROM itemDataValues WHERE value = ?", (value,))
+    row = cur.fetchone()
+    if row:
+        vid = row[0]
+    else:
+        cur = conn.execute("INSERT INTO itemDataValues (value) VALUES (?)", (value,))
+        vid = cur.lastrowid
     conn.execute(
         "INSERT OR REPLACE INTO itemData (itemID, fieldID, valueID) VALUES (?,?,?)",
-        (item_id, field_id(conn, fname), cur.lastrowid),
+        (item_id, field_id(conn, fname), vid),
     )
 
 
 def random_key() -> str:
     import random
+
     # Zotero allowedKeyChars = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"（排除 0,1,O）
     # 服务器同步会 400 拒绝含 0/1/O 的 key（'XXX' is not a valid item key）
     chars = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
@@ -109,6 +129,7 @@ def random_key() -> str:
 
 
 # ---------------------------------------------------------------- zotero run
+
 
 def zotero_running() -> bool:
     """Check whether Zotero Desktop is running. Platform-aware:
@@ -119,14 +140,20 @@ def zotero_running() -> bool:
         if system == "Windows":
             out = subprocess.run(
                 ["tasklist.exe", "/FO", "CSV", "/NH"],
-                capture_output=True, timeout=15,
+                capture_output=True,
+                timeout=15,
             ).stdout
-            return b"zotero.exe" in out.lower() or "zotero.exe" in out.decode("gbk", errors="replace").lower()
+            return (
+                b"zotero.exe" in out.lower()
+                or "zotero.exe" in out.decode("gbk", errors="replace").lower()
+            )
         # macOS / Linux: pgrep, matching only the desktop app
         names = ["Zotero", "zotero"] if system == "Darwin" else ["zotero"]
         for name in names:
             r = subprocess.run(
-                ["pgrep", "-x", name], capture_output=True, timeout=10,
+                ["pgrep", "-x", name],
+                capture_output=True,
+                timeout=10,
             )
             if r.returncode == 0:
                 return True
@@ -136,6 +163,7 @@ def zotero_running() -> bool:
 
 
 # ---------------------------------------------------------------- dedup
+
 
 def dedup_query(title: str) -> str:
     """Build a 2-3 word LIKE query from the title. Short words get dropped."""
@@ -163,7 +191,9 @@ def find_existing(conn, title: str) -> list[dict]:
             "SELECT COUNT(*) c FROM itemAttachments WHERE parentItemID=? AND contentType='application/pdf'",
             (r["itemID"],),
         ).fetchone()["c"]
-        hits.append({"key": r["key"], "title": r["title"], "exact": exact, "pdf": has_pdf})
+        hits.append(
+            {"key": r["key"], "title": r["title"], "exact": exact, "pdf": has_pdf}
+        )
     return hits
 
 
@@ -173,9 +203,14 @@ ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5}(?:v\d+)?)")
 
 
 def _direct_opener():
-    """arXiv must be accessed DIRECT (proxy rules truncate it, SSL EOF)."""
-    proxy_handler = urllib.request.ProxyHandler({})
-    return urllib.request.build_opener(proxy_handler)
+    """arXiv API: direct was historically required, but arXiv PDF download is
+    ~9x slower direct than via 7897 proxy on this box. Use proxy when set."""
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if proxy:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def arxiv_metadata(arxiv_id: str) -> dict:
@@ -201,6 +236,7 @@ def arxiv_metadata(arxiv_id: str) -> dict:
 
 # ---------------------------------------------------------------- import
 
+
 def validate_pdf(pdf: Path) -> str | None:
     """Return error message if the file is not a real PDF."""
     if not pdf.exists():
@@ -215,12 +251,21 @@ def validate_pdf(pdf: Path) -> str | None:
     return None
 
 
-def import_item(conn, *, title: str, authors: list[str], date: str | None,
-                url: str | None, extra: str | None, pdf_path: Path | None,
-                collection: str | None, storage_dir: Path | None = None) -> dict:
+def import_item(
+    conn,
+    *,
+    title: str,
+    authors: list[str],
+    date: str | None,
+    url: str | None,
+    extra: str | None,
+    pdf_path: Path | None,
+    collection: str | None,
+    storage_dir: Path | None = None,
+) -> dict:
     """Insert one item (+attachment +collection) into the DB."""
     storage_root = storage_dir or Path(DEFAULT_STORAGE)
-    now = time.strftime('%Y-%m-%d %H:%M:%S')  # Zotero 期望 text，不是毫秒时间戳
+    now = time.strftime("%Y-%m-%d %H:%M:%S")  # Zotero 期望 text，不是毫秒时间戳
     key = random_key()
     cur = conn.execute(
         """INSERT INTO items (key, libraryID, itemTypeID, dateAdded, dateModified, clientDateModified)
@@ -271,7 +316,14 @@ def import_item(conn, *, title: str, authors: list[str], date: str | None,
             """INSERT INTO itemAttachments
                (itemID, parentItemID, linkMode, contentType, charsetID, path)
                VALUES (?,?,?,?,?,?)""",
-            (attach_item_id, item_id, 1, "application/pdf", 1, f"storage:{pdf_path.name}"),
+            (
+                attach_item_id,
+                item_id,
+                0,
+                "application/pdf",
+                1,
+                f"storage:{pdf_path.name}",
+            ),
         )
         # copy to storage dir named after the attachment key
         storage_dir_path = storage_root / attach_key
@@ -299,31 +351,44 @@ def import_item(conn, *, title: str, authors: list[str], date: str | None,
             col_id = c.lastrowid
         else:
             col_id = col["collectionID"]
-        conn.execute("INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?,?)",
-                     (col_id, item_id))
+        conn.execute(
+            "INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?,?)",
+            (col_id, item_id),
+        )
 
-    return {"key": key, "item_id": item_id, "attachment_key": attach_key, "title": title}
+    return {
+        "key": key,
+        "item_id": item_id,
+        "attachment_key": attach_key,
+        "title": title,
+    }
 
 
 def get_author_type_id(conn) -> int:
     global CREATOR_AUTHOR
     if CREATOR_AUTHOR is None:
-        row = conn.execute("SELECT creatorTypeID FROM creatorTypes WHERE creatorType=?", ("author",)).fetchone()
+        row = conn.execute(
+            "SELECT creatorTypeID FROM creatorTypes WHERE creatorType=?", ("author",)
+        ).fetchone()
         CREATOR_AUTHOR = row["creatorTypeID"] if row else 8
     return CREATOR_AUTHOR
 
 
 # ---------------------------------------------------------------- commands
 
+
 def cmd_status(args) -> None:
     import sqlite3
+
     print(f"db: {args.db}")
     print(f"db exists: {os.path.exists(args.db)}")
     print(f"zotero running: {zotero_running()}")
     if not os.path.exists(args.db):
         return
     conn = connect(args.db)
-    total = conn.execute("SELECT COUNT(*) c FROM items WHERE libraryID=?", (MAIN_LIBRARY,)).fetchone()["c"]
+    total = conn.execute(
+        "SELECT COUNT(*) c FROM items WHERE libraryID=?", (MAIN_LIBRARY,)
+    ).fetchone()["c"]
     top = conn.execute(
         "SELECT COUNT(*) c FROM items WHERE libraryID=? AND itemTypeID NOT IN (14,1)",
         (MAIN_LIBRARY,),
@@ -334,7 +399,9 @@ def cmd_status(args) -> None:
            (SELECT itemID FROM items WHERE libraryID=?)""",
         (MAIN_LIBRARY,),
     ).fetchone()["c"]
-    cols = conn.execute("SELECT COUNT(*) c FROM collections WHERE libraryID=?", (MAIN_LIBRARY,)).fetchone()["c"]
+    cols = conn.execute(
+        "SELECT COUNT(*) c FROM collections WHERE libraryID=?", (MAIN_LIBRARY,)
+    ).fetchone()["c"]
     print(f"items (all incl. children): {total}")
     print(f"top-level items: {top}")
     print(f"pdf attachments: {pdfs}")
@@ -377,7 +444,10 @@ def cmd_collections(args) -> None:
 
 def cmd_collection_create(args) -> None:
     if zotero_running():
-        print("ERROR: Zotero is running. Close it first (SQLite write lock).", file=sys.stderr)
+        print(
+            "ERROR: Zotero is running. Close it first (SQLite write lock).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     conn = connect(args.db)
     existing = conn.execute(
@@ -385,7 +455,9 @@ def cmd_collection_create(args) -> None:
         (args.name, MAIN_LIBRARY),
     ).fetchone()
     if existing:
-        print(f"EXISTS: collection '{args.name}' already exists (id={existing['collectionID']})")
+        print(
+            f"EXISTS: collection '{args.name}' already exists (id={existing['collectionID']})"
+        )
         conn.close()
         return
     cur = conn.execute(
@@ -400,7 +472,10 @@ def cmd_collection_create(args) -> None:
 
 def cmd_import_pdf(args) -> None:
     if zotero_running():
-        print("ERROR: Zotero is running. Close it first (SQLite write lock).", file=sys.stderr)
+        print(
+            "ERROR: Zotero is running. Close it first (SQLite write lock).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     conn = connect(args.db)
     for pdf in args.files:
@@ -424,10 +499,18 @@ def cmd_import_pdf(args) -> None:
         meta = arxiv_metadata(arxiv_id) if arxiv_id else {}
         if meta.get("title"):
             title = meta["title"]  # API title beats caller-provided guess
+        authors = meta.get("authors", [])
+        if getattr(args, "authors", None) and not authors:
+            authors = [a.strip() for a in re.split(r"[,;]", args.authors) if a.strip()]
         result = import_item(
-            conn, title=title, authors=meta.get("authors", []),
-            date=args.date, url=meta.get("url"), extra=meta.get("extra"),
-            pdf_path=pdf, collection=args.collection,
+            conn,
+            title=title,
+            authors=authors,
+            date=args.date,
+            url=getattr(args, "url", None) or meta.get("url"),
+            extra=meta.get("extra"),
+            pdf_path=pdf,
+            collection=args.collection,
             storage_dir=Path(args.storage) if args.storage else None,
         )
         print(f"IMPORTED {pdf.name} -> {result['key']} | {title[:80]}")
@@ -437,11 +520,17 @@ def cmd_import_pdf(args) -> None:
 
 def cmd_import_arxiv(args) -> None:
     if zotero_running():
-        print("ERROR: Zotero is running. Close it first (SQLite write lock).", file=sys.stderr)
+        print(
+            "ERROR: Zotero is running. Close it first (SQLite write lock).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     meta = arxiv_metadata(args.id)
     if not meta.get("title"):
-        print(f"ERROR: arXiv API returned nothing for {args.id} (network? bad id?)", file=sys.stderr)
+        print(
+            f"ERROR: arXiv API returned nothing for {args.id} (network? bad id?)",
+            file=sys.stderr,
+        )
         sys.exit(1)
     conn = connect(args.db)
     existing = find_existing(conn, meta["title"])
@@ -465,9 +554,14 @@ def cmd_import_arxiv(args) -> None:
         conn.close()
         sys.exit(1)
     result = import_item(
-        conn, title=meta["title"], authors=meta["authors"],
-        date=args.date or meta.get("date"), url=meta["url"],
-        extra=meta.get("extra"), pdf_path=pdf_path, collection=args.collection,
+        conn,
+        title=meta["title"],
+        authors=meta["authors"],
+        date=args.date or meta.get("date"),
+        url=meta["url"],
+        extra=meta.get("extra"),
+        pdf_path=pdf_path,
+        collection=args.collection,
         storage_dir=Path(args.storage) if args.storage else None,
     )
     print(f"IMPORTED arXiv:{args.id} -> {result['key']} | {meta['title'][:80]}")
@@ -524,9 +618,12 @@ def cmd_export_bibtex(args) -> None:
 
 # ---------------------------------------------------------------- main
 
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="zotero-cli", description=__doc__)
-    p.add_argument("--db", default=DEFAULT_DB, help=f"zotero.sqlite path (default: {DEFAULT_DB})")
+    p.add_argument(
+        "--db", default=DEFAULT_DB, help=f"zotero.sqlite path (default: {DEFAULT_DB})"
+    )
     p.add_argument("--storage", default=DEFAULT_STORAGE, help="storage dir")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -534,17 +631,23 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("search", help="search by title")
     s.add_argument("query")
     s.set_defaults(func=cmd_search)
-    sub.add_parser("collections", help="list collections").set_defaults(func=cmd_collections)
+    sub.add_parser("collections", help="list collections").set_defaults(
+        func=cmd_collections
+    )
     cc = sub.add_parser("collection-create", help="create a collection")
     cc.add_argument("name")
     cc.set_defaults(func=cmd_collection_create)
 
     ip = sub.add_parser("import", help="import")
     ip_sub = ip.add_subparsers(dest="kind", required=True)
-    pdf = ip_sub.add_parser("pdf", help="import PDF files (title from --title, extracted externally)")
+    pdf = ip_sub.add_parser(
+        "pdf", help="import PDF files (title from --title, extracted externally)"
+    )
     pdf.add_argument("files", nargs="+")
     pdf.add_argument("--collection", help="collection name")
     pdf.add_argument("--title", help="paper title (extract with odl-pdf skill first)")
+    pdf.add_argument("--authors", "--author", help="paper authors (comma or semicolon separated)")
+    pdf.add_argument("--url", help="paper URL")
     pdf.add_argument("--arxiv-id", help="arXiv ID for metadata (optional)")
     pdf.add_argument("--date", help="date override (YYYY-MM-DD)")
     pdf.set_defaults(func=cmd_import_pdf)
@@ -554,7 +657,9 @@ def build_parser() -> argparse.ArgumentParser:
     arx.add_argument("--date")
     arx.set_defaults(func=cmd_import_arxiv)
 
-    sub.add_parser("meta-check", help="scan items missing date").set_defaults(func=cmd_meta_check)
+    sub.add_parser("meta-check", help="scan items missing date").set_defaults(
+        func=cmd_meta_check
+    )
     e = sub.add_parser("export-bibtex", help="export as bibtex")
     e.add_argument("--out")
     e.set_defaults(func=cmd_export_bibtex)
