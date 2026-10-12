@@ -72,6 +72,21 @@ zotero-cli import pdf paper.pdf --title "Real Paper Title" --arxiv-id 2608.04003
 
 换任何提取工具只需改第 1 步——zotero-cli 不关心你用什么。
 
+## 扩展工具脚本 (scripts/)
+
+### 沉浸式翻译无头客户端 (`scripts/translate_pdf.py`)
+
+支持无头批量调用沉浸式翻译 (BabelDOC) 官方服务，生成保留原始 LaTeX 数学公式、多栏排版与矢量图的双语对照 PDF。
+
+- **依赖说明**：本脚本依赖**沉浸式翻译 Pro 会员权限**（提供云端大模型与排版计算支持）。
+- **授权码读取**：
+  1. 优先读取环境变量 `IMT_AUTH_KEY` 或 `.env` 中的 `IMT_AUTH_KEY`；
+  2. 若未配置，自动检测并读取 Windows 宿主机 Zotero 7 扩展中已保存的 `authkey`，无需重复手动填写。
+- **使用方法**：
+  ```bash
+  python3 scripts/translate_pdf.py /path/to/paper.pdf [--out /path/to/bilingual.pdf] [--lang zh-CN] [--model kimi+deepseek]
+  ```
+
 ## 踩坑记录（为什么这些坑存在）
 
 - **Zotero 运行检测**（Windows 相关）：`tasklist.exe` 输出是 GBK 编码，UTF-8 解码会崩溃。工具已按 bytes 匹配处理；macOS/Linux 走 pgrep 无此问题。
